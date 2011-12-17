@@ -595,8 +595,8 @@ public final class Settings {
      * @hide
      */
     @SdkConstant(SdkConstantType.ACTIVITY_INTENT_ACTION)
-    public static final String ACTION_ANDERSON_SETTINGS =
-        "android.settings.ANDERSON_SETTINGS";
+    public static final String ACTION_ANDERSON_NOTIFICATION_SETTINGS =
+        "android.settings.ANDERSON_NOTIFICATION_SETTINGS";
 
     // End of Intent actions for Settings
 
@@ -1914,6 +1914,38 @@ public final class Settings {
          * @hide
          */
         public static final int NOTIFICATION_PULSE_COLOR_FALLBACK = -1;	// fallback to white if no other color set
+        
+        /**
+         * Pulse light duration setting.
+         * This is an int value which represents the milliseconds the pulse should flash
+         * 
+         * @hide
+         */
+        public static final String NOTIFICATION_PULSE_DURATION = "notification_pulse_duration";
+        
+        /**
+         * Pulse light duration fallback setting.
+         * This is an int value which represents the milliseconds the pulse should flash
+         * 
+         * @hide
+         */
+        public static final int NOTIFICATION_PULSE_DURATION_FALLBACK = 500;	// fallback to 500ms
+        
+        /**
+         * Pulse light frequency setting.
+         * This is an int value which represents the milliseconds between pulses
+         * 
+         * @hide
+         */
+        public static final String NOTIFICATION_PULSE_FREQUENCY = "notification_pulse_frequency";
+        
+        /**
+         * Pulse light duration fallback setting.
+         * This is an int value which represents the milliseconds between pulses
+         * 
+         * @hide
+         */
+        public static final int NOTIFICATION_PULSE_FREQUENCY_FALLBACK = 7000;	// fallback to 7000ms
 
         /**
          * Settings to backup. This is here so that it's in the same place as the settings

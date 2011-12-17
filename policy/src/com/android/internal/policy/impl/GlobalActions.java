@@ -161,6 +161,19 @@ class GlobalActions implements DialogInterface.OnDismissListener, DialogInterfac
 
         // first: power off
         mItems.add(
+                new SinglePressAction(com.android.internal.R.drawable.ic_lock_reboot, R.string.global_action_reboot) {
+                    public void onPress() {
+                    	ShutdownThread.reboot(mContext, "null", true);
+                    }
+
+                    public boolean showDuringKeyguard() {
+                        return true;
+                    }
+                    public boolean showBeforeProvisioning() {
+                        return true;
+                    }
+                });
+		mItems.add(
             new SinglePressAction(
                     com.android.internal.R.drawable.ic_lock_power_off,
                     R.string.global_action_power_off) {
