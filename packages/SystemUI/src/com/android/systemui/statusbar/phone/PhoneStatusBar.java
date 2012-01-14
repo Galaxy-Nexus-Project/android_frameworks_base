@@ -24,7 +24,9 @@ import android.app.KeyguardManager;
 import android.app.Notification;
 import android.app.PendingIntent;
 import android.app.StatusBarManager;
+import android.bluetooth.BluetoothAdapter;
 import android.content.BroadcastReceiver;
+import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
@@ -32,11 +34,17 @@ import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager.NameNotFoundException;
 import android.content.res.Resources;
 import android.content.res.Configuration;
+import android.database.ContentObserver;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
 import android.graphics.drawable.Drawable;
+import android.location.LocationManager;
+import android.net.ConnectivityManager;
+import android.net.wifi.WifiManager;
+import android.os.AsyncTask;
 import android.os.Build;
 import android.os.IBinder;
+import android.os.IPowerManager;
 import android.os.RemoteException;
 import android.os.Handler;
 import android.os.Message;
@@ -165,6 +173,7 @@ public class PhoneStatusBar extends StatusBar {
     TextView mNoNotificationsTitle;
     View mClearButton;
     View mSettingsButton;
+    ImageView mWifiButton;
 
     // drag bar
     CloseDragHandle mCloseView;
@@ -220,7 +229,6 @@ public class PhoneStatusBar extends StatusBar {
     int[] mAbsPos = new int[2];
     Runnable mPostCollapseCleanup = null;
 
-
     // for disabling the status bar
     int mDisabled = 0;
 
@@ -245,6 +253,563 @@ public class PhoneStatusBar extends StatusBar {
                 return true;
             }
             return super.dispatchKeyEvent(event);
+        }
+    }
+    
+    /** termleech - 1/2/2012 
+     * Added this to this class so that eventually I can use this in a tablet layout as well
+     */
+    
+    protected static final int BUTTON_WIFI = 0;
+    protected static final int BUTTON_BRIGHTNESS = 1;
+    protected static final int BUTTON_SYNC = 2;
+    protected static final int BUTTON_GPS = 3;
+    protected static final int BUTTON_BLUETOOTH = 4;
+
+    // This widget keeps track of two sets of states:
+    // "3-state": STATE_DISABLED, STATE_ENABLED, STATE_INTERMEDIATE
+    // "5-state": STATE_DISABLED, STATE_ENABLED, STATE_TURNING_ON, STATE_TURNING_OFF, STATE_UNKNOWN
+    protected static final int STATE_DISABLED = 0;
+    protected static final int STATE_ENABLED = 1;
+    protected static final int STATE_TURNING_ON = 2;
+    protected static final int STATE_TURNING_OFF = 3;
+    protected static final int STATE_UNKNOWN = 4;
+    protected static final int STATE_INTERMEDIATE = 5;
+    
+    /**
+     * Minimum and maximum brightnesses.  Don't go to 0 since that makes the display unusable
+     */
+    private static final int MINIMUM_BACKLIGHT = android.os.Power.BRIGHTNESS_DIM + 10;
+    private static final int MAXIMUM_BACKLIGHT = android.os.Power.BRIGHTNESS_ON;
+    private static final int DEFAULT_BACKLIGHT = (int) (android.os.Power.BRIGHTNESS_ON * 0.4f);
+    /** Minimum brightness at which the indicator is shown at half-full and ON */
+    private static final int HALF_BRIGHTNESS_THRESHOLD = (int) (0.3 * MAXIMUM_BACKLIGHT);
+    /** Minimum brightness at which the indicator is shown at full */
+    private static final int FULL_BRIGHTNESS_THRESHOLD = (int) (0.8 * MAXIMUM_BACKLIGHT);
+
+    private static final StateTracker sWifiState = new WifiStateTracker();
+    private static final StateTracker sBluetoothState = new BluetoothStateTracker();
+    private static final StateTracker sGpsState = new GpsStateTracker();
+    private static final StateTracker sSyncState = new SyncStateTracker();
+    private static SettingsObserver sSettingsObserver;
+    
+    /** termleech - 01/02/2012
+     *  Added code from settings widget to track state 
+     */
+    
+    /**
+     * The state machine for a setting's toggling, tracking reality
+     * versus the user's intent.
+     *
+     * This is necessary because reality moves relatively slowly
+     * (turning on &amp; off radio drivers), compared to user's
+     * expectations.
+     */
+    private abstract static class StateTracker {
+        // Is the state in the process of changing?
+        private boolean mInTransition = false;
+        private Boolean mActualState = null;  // initially not set
+        private Boolean mIntendedState = null;  // initially not set
+
+        // Did a toggle request arrive while a state update was
+        // already in-flight?  If so, the mIntendedState needs to be
+        // requested when the other one is done, unless we happened to
+        // arrive at that state already.
+        private boolean mDeferredStateChangeRequestNeeded = false;
+
+        /**
+         * User pressed a button to change the state.  Something
+         * should immediately appear to the user afterwards, even if
+         * we effectively do nothing.  Their press must be heard.
+         */
+        public final void toggleState(Context context) {
+            int currentState = getTriState(context);
+            boolean newState = false;
+            switch (currentState) {
+                case STATE_ENABLED:
+                    newState = false;
+                    break;
+                case STATE_DISABLED:
+                    newState = true;
+                    break;
+                case STATE_INTERMEDIATE:
+                    if (mIntendedState != null) {
+                        newState = !mIntendedState;
+                    }
+                    break;
+            }
+            mIntendedState = newState;
+            if (mInTransition) {
+                // We don't send off a transition request if we're
+                // already transitioning.  Makes our state tracking
+                // easier, and is probably nicer on lower levels.
+                // (even though they should be able to take it...)
+                mDeferredStateChangeRequestNeeded = true;
+            } else {
+                mInTransition = true;
+                requestStateChange(context, newState);
+            }
+        }
+
+        /**
+         * Return the ID of the main large image button for the setting.
+         */
+        public abstract int getButtonId();
+
+        /**
+         * Returns the resource ID of the image to show as a function of
+         * the on-vs-off state.
+         */
+        public abstract int getButtonImageId(boolean on);
+
+        /**
+         * Updates the remote views depending on the state (off, on,
+         * turning off, turning on) of the setting.
+         */
+        public final void setImageViewResources(Context context, RemoteViews views) {
+        	Log.d("PhoneStatusBar", "Setting image view resources");
+            int buttonId = getButtonId();
+            switch (getTriState(context)) {
+                case STATE_DISABLED:
+                	Log.d("PhoneStatusBar", "Got STATE_DISABLED");
+                    views.setImageViewResource(buttonId, getButtonImageId(false));
+                    break;
+                case STATE_ENABLED:
+                	Log.d("PhoneStatusBar", "Got STATE_ENABLED");
+                    views.setImageViewResource(buttonId, getButtonImageId(true));
+                    break;
+                case STATE_INTERMEDIATE:
+                    // In the transitional state, the bottom green bar
+                    // shows the tri-state (on, off, transitioning), but
+                    // the top dark-gray-or-bright-white logo shows the
+                    // user's intent.  This is much easier to see in
+                    // sunlight.
+                    if (isTurningOn()) {
+                        views.setImageViewResource(buttonId, getButtonImageId(true));
+                    } else {
+                        views.setImageViewResource(buttonId, getButtonImageId(false));
+                    }
+                    break;
+            }
+        }
+        
+        /**
+         * Gets the resource ID of the button based on the current state
+         * @param context
+         * @return the resource ID of the button based on the current state
+         */
+        public int getImageViewResource(Context context) {
+        	int buttonID = -1;
+        	
+        	switch (getTriState(context)) {
+	            case STATE_DISABLED:
+	            	Log.d("PhoneStatusBar", "Got STATE_DISABLED");
+	                buttonID =  getButtonImageId(false);
+	                break;
+	            case STATE_ENABLED:
+	            	Log.d("PhoneStatusBar", "Got STATE_ENABLED");
+	                buttonID = getButtonImageId(true);
+	                break;
+	            case STATE_INTERMEDIATE:
+	                // In the transitional state, the bottom green bar
+	                // shows the tri-state (on, off, transitioning), but
+	                // the top dark-gray-or-bright-white logo shows the
+	                // user's intent.  This is much easier to see in
+	                // sunlight.
+	                if (isTurningOn()) {
+	                    buttonID = getButtonImageId(true);
+	                } else {
+	                    buttonID = getButtonImageId(false);
+	                }
+	                break;
+	        }
+        	
+        	return buttonID;
+        }
+
+        /**
+         * Update internal state from a broadcast state change.
+         */
+        public abstract void onActualStateChange(Context context, Intent intent);
+
+        /**
+         * Sets the value that we're now in.  To be called from onActualStateChange.
+         *
+         * @param newState one of STATE_DISABLED, STATE_ENABLED, STATE_TURNING_ON,
+         *                 STATE_TURNING_OFF, STATE_UNKNOWN
+         */
+        protected final void setCurrentState(Context context, int newState) {
+            final boolean wasInTransition = mInTransition;
+            switch (newState) {
+                case STATE_DISABLED:
+                    mInTransition = false;
+                    mActualState = false;
+                    break;
+                case STATE_ENABLED:
+                    mInTransition = false;
+                    mActualState = true;
+                    break;
+                case STATE_TURNING_ON:
+                    mInTransition = true;
+                    mActualState = false;
+                    break;
+                case STATE_TURNING_OFF:
+                    mInTransition = true;
+                    mActualState = true;
+                    break;
+            }
+
+            if (wasInTransition && !mInTransition) {
+                if (mDeferredStateChangeRequestNeeded) {
+                    Log.v(TAG, "processing deferred state change");
+                    if (mActualState != null && mIntendedState != null &&
+                        mIntendedState.equals(mActualState)) {
+                        Log.v(TAG, "... but intended state matches, so no changes.");
+                    } else if (mIntendedState != null) {
+                        mInTransition = true;
+                        requestStateChange(context, mIntendedState);
+                    }
+                    mDeferredStateChangeRequestNeeded = false;
+                }
+            }
+        }
+
+
+        /**
+         * If we're in a transition mode, this returns true if we're
+         * transitioning towards being enabled.
+         */
+        public final boolean isTurningOn() {
+            return mIntendedState != null && mIntendedState;
+        }
+
+        /**
+         * Returns simplified 3-state value from underlying 5-state.
+         *
+         * @param context
+         * @return STATE_ENABLED, STATE_DISABLED, or STATE_INTERMEDIATE
+         */
+        public final int getTriState(Context context) {
+            if (mInTransition) {
+                // If we know we just got a toggle request recently
+                // (which set mInTransition), don't even ask the
+                // underlying interface for its state.  We know we're
+                // changing.  This avoids blocking the UI thread
+                // during UI refresh post-toggle if the underlying
+                // service state accessor has coarse locking on its
+                // state (to be fixed separately).
+                return STATE_INTERMEDIATE;
+            }
+            switch (getActualState(context)) {
+                case STATE_DISABLED:
+                    return STATE_DISABLED;
+                case STATE_ENABLED:
+                    return STATE_ENABLED;
+                default:
+                    return STATE_INTERMEDIATE;
+            }
+        }
+
+        /**
+         * Gets underlying actual state.
+         *
+         * @param context
+         * @return STATE_ENABLED, STATE_DISABLED, STATE_ENABLING, STATE_DISABLING,
+         *         or or STATE_UNKNOWN.
+         */
+        public abstract int getActualState(Context context);
+
+        /**
+         * Actually make the desired change to the underlying radio
+         * API.
+         */
+        protected abstract void requestStateChange(Context context, boolean desiredState);
+    }
+
+    /*
+     * Subclass of StateTracker to get/set Wifi state.
+     */
+    private static final class WifiStateTracker extends StateTracker {
+        public int getButtonId() { return R.id.qtoggle_wifi; }
+        public int getButtonImageId(boolean on) {
+        	Log.d("PhoneStatusBar", "Getting button ID");
+        	
+            return on ? R.drawable.ic_notify_wifi_on
+                    : R.drawable.ic_notify_wifi_off;
+        }
+
+        @Override
+        public int getActualState(Context context) {
+            WifiManager wifiManager = (WifiManager) context.getSystemService(Context.WIFI_SERVICE);
+            if (wifiManager != null) {
+                return wifiStateToFiveState(wifiManager.getWifiState());
+            }
+            return STATE_UNKNOWN;
+        }
+
+        @Override
+        protected void requestStateChange(Context context, final boolean desiredState) {
+            final WifiManager wifiManager =
+                    (WifiManager) context.getSystemService(Context.WIFI_SERVICE);
+            if (wifiManager == null) {
+                Log.d(TAG, "No wifiManager.");
+                return;
+            }
+
+            // Actually request the wifi change and persistent
+            // settings write off the UI thread, as it can take a
+            // user-noticeable amount of time, especially if there's
+            // disk contention.
+            new AsyncTask<Void, Void, Void>() {
+                @Override
+                protected Void doInBackground(Void... args) {
+                    /**
+                     * Disable tethering if enabling Wifi
+                     */
+                    int wifiApState = wifiManager.getWifiApState();
+                    if (desiredState && ((wifiApState == WifiManager.WIFI_AP_STATE_ENABLING) ||
+                                         (wifiApState == WifiManager.WIFI_AP_STATE_ENABLED))) {
+                        wifiManager.setWifiApEnabled(null, false);
+                    }
+
+                    wifiManager.setWifiEnabled(desiredState);
+                    return null;
+                }
+            }.execute();
+        }
+
+        @Override
+        public void onActualStateChange(Context context, Intent intent) {
+            if (!WifiManager.WIFI_STATE_CHANGED_ACTION.equals(intent.getAction())) {
+                return;
+            }
+            int wifiState = intent.getIntExtra(WifiManager.EXTRA_WIFI_STATE, -1);
+            setCurrentState(context, wifiStateToFiveState(wifiState));
+        }
+
+        /**
+         * Converts WifiManager's state values into our
+         * Wifi/Bluetooth-common state values.
+         */
+        private static int wifiStateToFiveState(int wifiState) {
+            switch (wifiState) {
+                case WifiManager.WIFI_STATE_DISABLED:
+                    return STATE_DISABLED;
+                case WifiManager.WIFI_STATE_ENABLED:
+                    return STATE_ENABLED;
+                case WifiManager.WIFI_STATE_DISABLING:
+                    return STATE_TURNING_OFF;
+                case WifiManager.WIFI_STATE_ENABLING:
+                    return STATE_TURNING_ON;
+                default:
+                    return STATE_UNKNOWN;
+            }
+        }
+    }
+
+    /**
+     * Subclass of StateTracker to get/set Bluetooth state.
+     */
+    private static final class BluetoothStateTracker extends StateTracker {
+        public int getButtonId() { return R.id.qtoggle_bluetooth; }
+        public int getButtonImageId(boolean on) {
+            return on ? R.drawable.ic_notify_bluetooth_on
+                    : R.drawable.ic_notify_bluetooth_off;
+        }
+
+        @Override
+        public int getActualState(Context context) {
+        	BluetoothAdapter mAdapter = BluetoothAdapter.getDefaultAdapter();
+        	
+        	if (mAdapter == null) {
+        		return STATE_UNKNOWN;
+        	}
+            
+            return bluetoothStateToFiveState(mAdapter.getState());
+        }
+
+        @Override
+        protected void requestStateChange(Context context, final boolean desiredState) {
+            // Actually request the Bluetooth change and persistent
+            // settings write off the UI thread, as it can take a
+            // user-noticeable amount of time, especially if there's
+            // disk contention.
+            new AsyncTask<Void, Void, Void>() {
+                @Override
+                protected Void doInBackground(Void... args) {
+                    BluetoothAdapter mAdapter = BluetoothAdapter.getDefaultAdapter();
+                    
+                    if (desiredState) {
+                    	mAdapter.enable();
+                    } else {
+                    	mAdapter.disable();
+                    }
+                    
+                    return null;
+                }
+            }.execute();
+        }
+
+        @Override
+        public void onActualStateChange(Context context, Intent intent) {
+            if (!BluetoothAdapter.ACTION_STATE_CHANGED.equals(intent.getAction())) {
+                return;
+            }
+            int bluetoothState = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, -1);
+            setCurrentState(context, bluetoothStateToFiveState(bluetoothState));
+        }
+
+        /**
+         * Converts BluetoothAdapter's state values into our
+         * Wifi/Bluetooth-common state values.
+         */
+        private static int bluetoothStateToFiveState(int bluetoothState) {
+            switch (bluetoothState) {
+                case BluetoothAdapter.STATE_OFF:
+                    return STATE_DISABLED;
+                case BluetoothAdapter.STATE_ON:
+                    return STATE_ENABLED;
+                case BluetoothAdapter.STATE_TURNING_ON:
+                    return STATE_TURNING_ON;
+                case BluetoothAdapter.STATE_TURNING_OFF:
+                    return STATE_TURNING_OFF;
+                default:
+                    return STATE_UNKNOWN;
+            }
+        }
+    }
+
+    /**
+     * Subclass of StateTracker for GPS state.
+     */
+    private static final class GpsStateTracker extends StateTracker {
+        public int getButtonId() { return R.id.qtoggle_gps; }
+        public int getButtonImageId(boolean on) {
+            return on ? R.drawable.ic_notify_gps_on
+                    : R.drawable.ic_notify_gps_off;
+        }
+
+        @Override
+        public int getActualState(Context context) {
+            ContentResolver resolver = context.getContentResolver();
+            boolean on = Settings.Secure.isLocationProviderEnabled(
+                resolver, LocationManager.GPS_PROVIDER);
+            return on ? STATE_ENABLED : STATE_DISABLED;
+        }
+
+        @Override
+        public void onActualStateChange(Context context, Intent unused) {
+            // Note: the broadcast location providers changed intent
+            // doesn't include an extras bundles saying what the new value is.
+            setCurrentState(context, getActualState(context));
+        }
+
+        @Override
+        public void requestStateChange(final Context context, final boolean desiredState) {
+            final ContentResolver resolver = context.getContentResolver();
+            new AsyncTask<Void, Void, Boolean>() {
+                @Override
+                protected Boolean doInBackground(Void... args) {
+                    Settings.Secure.setLocationProviderEnabled(
+                        resolver,
+                        LocationManager.GPS_PROVIDER,
+                        desiredState);
+                    return desiredState;
+                }
+
+                @Override
+                protected void onPostExecute(Boolean result) {
+                    setCurrentState(
+                        context,
+                        result ? STATE_ENABLED : STATE_DISABLED);
+                    updateToggles(context);
+                }
+            }.execute();
+        }
+    }
+
+    /**
+     * Subclass of StateTracker for sync state.
+     */
+    private static final class SyncStateTracker extends StateTracker {
+        public int getButtonId() { return R.id.qtoggle_sync; }
+        public int getButtonImageId(boolean on) {
+            return on ? R.drawable.ic_notify_sync_on
+                    : R.drawable.ic_notify_sync_off;
+        }
+
+        @Override
+        public int getActualState(Context context) {
+            boolean on = ContentResolver.getMasterSyncAutomatically();
+            return on ? STATE_ENABLED : STATE_DISABLED;
+        }
+
+        @Override
+        public void onActualStateChange(Context context, Intent unused) {
+            setCurrentState(context, getActualState(context));
+        }
+
+        @Override
+        public void requestStateChange(final Context context, final boolean desiredState) {
+            final ConnectivityManager connManager =
+                    (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
+            final boolean sync = ContentResolver.getMasterSyncAutomatically();
+
+            new AsyncTask<Void, Void, Boolean>() {
+                @Override
+                protected Boolean doInBackground(Void... args) {
+                    // Turning sync on.
+                    if (desiredState) {
+                        if (!sync) {
+                            ContentResolver.setMasterSyncAutomatically(true);
+                        }
+                        return true;
+                    }
+
+                    // Turning sync off
+                    if (sync) {
+                        ContentResolver.setMasterSyncAutomatically(false);
+                    }
+                    return false;
+                }
+
+                @Override
+                protected void onPostExecute(Boolean result) {
+                    setCurrentState(
+                        context,
+                        result ? STATE_ENABLED : STATE_DISABLED);
+                    updateToggles(context);
+                }
+            }.execute();
+        }
+    }
+    
+    /** Observer to watch for changes to the BRIGHTNESS setting */
+    private static class SettingsObserver extends ContentObserver {
+
+        private Context mContext;
+
+        SettingsObserver(Handler handler, Context context) {
+            super(handler);
+            mContext = context;
+        }
+
+        void startObserving() {
+            ContentResolver resolver = mContext.getContentResolver();
+            // Listen to brightness and brightness mode
+            resolver.registerContentObserver(Settings.System
+                    .getUriFor(Settings.System.SCREEN_BRIGHTNESS), false, this);
+            resolver.registerContentObserver(Settings.System
+                    .getUriFor(Settings.System.SCREEN_BRIGHTNESS_MODE), false, this);
+        }
+
+        void stopObserving() {
+            mContext.getContentResolver().unregisterContentObserver(this);
+        }
+
+        @Override
+        public void onChange(boolean selfChange) {
+            updateToggles(mContext);
         }
     }
 
@@ -285,7 +850,7 @@ public class PhoneStatusBar extends StatusBar {
             expanded.setBackgroundColor(0x6000FF80);
         }
         expanded.mService = this;
-
+        
         mIntruderAlertView = View.inflate(context, R.layout.intruder_alert, null);
         mIntruderAlertView.setVisibility(View.GONE);
         mIntruderAlertView.setClickable(true);
@@ -330,6 +895,15 @@ public class PhoneStatusBar extends StatusBar {
         mDateView = (DateView)expanded.findViewById(R.id.date);
         mSettingsButton = expanded.findViewById(R.id.settings_button);
         mSettingsButton.setOnClickListener(mSettingsButtonListener);
+        
+        mWifiButton = (ImageView)expanded.findViewById(R.id.qtoggle_wifi);
+        
+        /** termleech - 01/02/2012
+         *  Set quick toggle buttons and set up click listeners
+         */
+        Log.d("PhoneStatusBar", "Updating toggle");
+        updateToggles(context);
+        
         mScrollView = (ScrollView)expanded.findViewById(R.id.scroll);
 
         mTicker = new MyTicker(context, sb);
@@ -2331,6 +2905,106 @@ public class PhoneStatusBar extends StatusBar {
             }
             return false;
         }
+    }
+    
+    /** termleech - 01/02/2012
+     *  Functions to support the toggling of the quick toggles
+     */
+    static void buildUpdate(Context context) {
+    	Log.d("PhoneStatusBar", "Building update");
+    	RemoteViews views = new RemoteViews(context.getPackageName(), R.layout.status_bar_expanded);
+    	
+    	updateButtons(views, context);
+    }
+    
+    public static void updateToggles(Context context) {
+    	buildUpdate(context);
+    	checkObserver(context);
+    }
+    
+    private static void checkObserver(Context context) {
+        if (sSettingsObserver == null) {
+            sSettingsObserver = new SettingsObserver(new Handler(),
+                    context.getApplicationContext());
+            sSettingsObserver.startObserving();
+        }
+    }
+    
+    /**
+     * Updates the buttons based on the underlying states of wifi, etc.
+     *
+     * @param views   The RemoteViews to update.
+     * @param context
+     */
+    private static void updateButtons(RemoteViews views, Context context) {
+    	int buttonID = -1;
+    	Log.d("PhoneStatusBar", "Updating buttons");
+        //sWifiState.setImageViewResources(context, views);
+    	buttonID = sWifiState.getImageViewResource(context);
+    	
+    	
+        sBluetoothState.setImageViewResources(context, views);
+        sGpsState.setImageViewResources(context, views);
+        sSyncState.setImageViewResources(context, views);
+        
+        if (getBrightnessMode(context)) {
+            views.setImageViewResource(R.id.qtoggle_brightness,
+                    R.drawable.ic_notify_brightness_auto);
+        } else {
+            final int brightness = getBrightness(context);
+            // Set the icon
+            if (brightness > FULL_BRIGHTNESS_THRESHOLD) {
+                views.setImageViewResource(R.id.qtoggle_brightness,
+                        R.drawable.ic_notify_brightness_full);
+            } else if (brightness > HALF_BRIGHTNESS_THRESHOLD) {
+                views.setImageViewResource(R.id.qtoggle_brightness,
+                        R.drawable.ic_notify_brightness_half);
+            } else {
+                views.setImageViewResource(R.id.qtoggle_brightness,
+                        R.drawable.ic_notify_brightness_off);
+            }
+        }
+    }
+    
+    /**
+     * Gets brightness level.
+     *
+     * @param context
+     * @return brightness level between 0 and 255.
+     */
+    private static int getBrightness(Context context) {
+        try {
+            IPowerManager power = IPowerManager.Stub.asInterface(
+                    ServiceManager.getService("power"));
+            if (power != null) {
+                int brightness = Settings.System.getInt(context.getContentResolver(),
+                        Settings.System.SCREEN_BRIGHTNESS);
+                return brightness;
+            }
+        } catch (Exception e) {
+        }
+        return 0;
+    }
+
+    /**
+     * Gets state of brightness mode.
+     *
+     * @param context
+     * @return true if auto brightness is on.
+     */
+    private static boolean getBrightnessMode(Context context) {
+        try {
+            IPowerManager power = IPowerManager.Stub.asInterface(
+                    ServiceManager.getService("power"));
+            if (power != null) {
+                int brightnessMode = Settings.System.getInt(context.getContentResolver(),
+                        Settings.System.SCREEN_BRIGHTNESS_MODE);
+                return brightnessMode == Settings.System.SCREEN_BRIGHTNESS_MODE_AUTOMATIC;
+            }
+        } catch (Exception e) {
+            Log.d(TAG, "getBrightnessMode: " + e);
+        }
+        return false;
     }
 }
 

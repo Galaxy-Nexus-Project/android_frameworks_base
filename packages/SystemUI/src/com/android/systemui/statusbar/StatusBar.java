@@ -19,8 +19,6 @@ package com.android.systemui.statusbar;
 import android.app.ActivityManager;
 import android.app.Service;
 import android.content.Context;
-import android.content.Intent;
-import android.content.res.Resources;
 import android.graphics.PixelFormat;
 import android.os.IBinder;
 import android.os.RemoteException;
@@ -28,7 +26,6 @@ import android.os.ServiceManager;
 import android.util.Slog;
 import android.util.Log;
 import android.view.Display;
-import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
@@ -50,7 +47,7 @@ public abstract class StatusBar extends SystemUI implements CommandQueue.Callbac
 
     protected CommandQueue mCommandQueue;
     protected IStatusBarService mBarService;
-
+    
     // Up-call methods
     protected abstract View makeStatusBarView();
     protected abstract int getStatusBarGravity();
@@ -58,7 +55,8 @@ public abstract class StatusBar extends SystemUI implements CommandQueue.Callbac
     public abstract void animateCollapse();
 
     private DoNotDisturb mDoNotDisturb;
-
+    
+    
     public void start() {
         // First set up our views and stuff.
         View sb = makeStatusBarView();
