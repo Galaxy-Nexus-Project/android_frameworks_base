@@ -76,9 +76,7 @@
             android:layout_height="match_parent"
             android:layout_toRightOf="@id/settings_button"
             android:orientation="horizontal"
-            android:clickable="true"
-        		android:focusable="true"
-        		android:background="@drawable/statbar_ui_bg">
+            >
 
             <ImageView android:id="@+id/qtoggle_wifi"
                 android:layout_width="wrap_content"
@@ -86,6 +84,9 @@
                 android:paddingLeft="8dp"
                 android:paddingRight="8dp"
                 android:src="@drawable/ic_notify_wifi_off"
+                android:clickable="true"
+        			 android:focusable="true"
+        		    android:background="@drawable/statbar_ui_bg"
                 />
 
             <ImageView android:id="@+id/qtoggle_bluetooth"
@@ -94,6 +95,9 @@
                 android:paddingLeft="8dp"
                 android:paddingRight="8dp"
                 android:src="@drawable/ic_notify_bluetooth_off"
+                android:clickable="true"
+        			 android:focusable="true"
+        			 android:background="@drawable/statbar_ui_bg"
                 />
 
             <ImageView android:id="@+id/qtoggle_gps"
@@ -102,6 +106,9 @@
                 android:paddingLeft="8dp"
                 android:paddingRight="8dp"
                 android:src="@drawable/ic_notify_gps_off"
+                android:clickable="true"
+        		    android:focusable="true"
+        			 android:background="@drawable/statbar_ui_bg"
                 />
 
             <ImageView android:id="@+id/qtoggle_sync"
@@ -110,6 +117,9 @@
                 android:paddingLeft="8dp"
                 android:paddingRight="8dp"
                 android:src="@drawable/ic_notify_sync_off"
+                android:clickable="true"
+        			 android:focusable="true"
+        			 android:background="@drawable/statbar_ui_bg"
                 />
 
             <ImageView android:id="@+id/qtoggle_brightness"
@@ -118,6 +128,9 @@
                 android:paddingLeft="8dp"
                 android:paddingRight="8dp"
                 android:src="@drawable/ic_notify_brightness_off"
+                android:clickable="true"
+        			 android:focusable="true"
+        			 android:background="@drawable/statbar_ui_bg"
                 />
 
         </LinearLayout>
