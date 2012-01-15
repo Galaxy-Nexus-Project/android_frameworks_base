@@ -75,7 +75,10 @@
             android:layout_width="wrap_content"
             android:layout_height="match_parent"
             android:layout_toRightOf="@id/settings_button"
-            android:orientation="horizontal">
+            android:orientation="horizontal"
+            android:clickable="true"
+        		android:focusable="true"
+        		android:background="@drawable/statbar_ui_bg">
 
             <ImageView android:id="@+id/qtoggle_wifi"
                 android:layout_width="wrap_content"
